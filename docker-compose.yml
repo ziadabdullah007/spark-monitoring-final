@@ -1,0 +1,174 @@
+services:
+
+  spark-master:
+    build:
+      context: ./spark
+    container_name: spark-master
+    hostname: spark-master
+
+    environment:
+      SPARK_MASTER_OPTS: "-Dspark.ui.prometheus.enabled=true"
+
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "7077"
+      - --webui-port
+      - "8080"
+
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+
+    volumes:
+      - ./spark:/opt/spark/jobs
+
+    networks:
+      - monitoring
+
+
+  spark-worker:
+    build:
+      context: ./spark
+    container_name: spark-worker
+    hostname: spark-worker
+
+    environment:
+      SPARK_WORKER_OPTS: "-Dspark.ui.prometheus.enabled=true"
+
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+      - --webui-port
+      - "8081"
+
+    ports:
+      - "8081:8081"
+
+    volumes:
+      - ./spark:/opt/spark/jobs
+
+    depends_on:
+      - spark-master
+
+    networks:
+      - monitoring
+
+
+  spark-submit:
+    build:
+      context: ./spark
+    container_name: spark-submit
+    hostname: spark-submit
+
+    profiles:
+      - job
+
+    depends_on:
+      - spark-master
+      - spark-worker
+
+    working_dir: /opt/spark/jobs
+
+    volumes:
+      - ./spark:/opt/spark/jobs
+
+    ports:
+      - "4040:4040"
+
+    entrypoint:
+      - /opt/spark/bin/spark-submit
+
+    command:
+      - --master
+      - spark://spark-master:7077
+      - --conf
+      - spark.ui.port=4040
+      - --conf
+      - spark.ui.prometheus.enabled=true
+      - --conf
+      - spark.metrics.appStatusSource.enabled=true
+      - --conf
+      - spark.metrics.conf=/opt/spark/conf/metrics.properties
+      - /opt/spark/jobs/spark_job.py
+
+    networks:
+      - monitoring
+
+
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    container_name: cadvisor
+    hostname: cadvisor
+
+    privileged: true
+
+    ports:
+      - "8082:8080"
+
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+
+    networks:
+      - monitoring
+
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: prometheus
+    hostname: prometheus
+
+    depends_on:
+      - cadvisor
+      - spark-master
+      - spark-worker
+
+    ports:
+      - "9090:9090"
+
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+    networks:
+      - monitoring
+
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    container_name: grafana
+    hostname: grafana
+
+    depends_on:
+      - prometheus
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+    networks:
+      - monitoring
+
+
+networks:
+  monitoring:
+    driver: bridge
+
+
+volumes:
+  grafana-data:
